@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # cekkuota_bot.py — Bot Telegram + cron-friendly (stdlib only)
-# Perintah: /mbot (menu), /cek <msisdn>, /cek_all, /jadwal, /ping
-# Output cek kuota: ringkasan rapi (bukan JSON)
+# Perintah: /start, /mbot (menu), /cek <msisdn>, /cek_all, /jadwal, /ping
+# Output cek kuota: ringkasan rapi dengan formatting menarik
 # Startup: kirim notifikasi "Bot aktif", deleteWebhook, sync offset
 
-import os, sys, json, time
+import os, sys, json, time, re
 from urllib import request, parse, error
 
 # ================== KONSTAN API (public) ==================
@@ -30,7 +30,6 @@ if not os.path.isdir(STATE_DIR):
 
 # ============= Util dasar =============
 def valid_msisdn(s: str) -> bool:
-    import re
     return bool(re.match(r"^(08[1-9][0-9]{7,11}|628[1-9][0-9]{7,11}|\+628[1-9][0-9]{7,11})$", s or ""))
 
 def http_post_json(url: str, data: dict, headers: dict):
@@ -96,7 +95,7 @@ def tg_api(method: str, params: dict = None):
     except Exception:
         return 0, None
 
-# ============= Format hasil kuota (rapi) =============
+# ============= Format hasil kuota (rapi & cantik) =============
 def _to_list(x):
     if x is None: return []
     if isinstance(x, list): return x
@@ -118,13 +117,7 @@ def _first_existing(obj, names, default=None):
     return default
 
 def extract_quotas(payload: dict):
-    """
-    dukung kedua bentuk:
-    1) { ..., "quotas": [ ... ] }
-    2) { ..., "data": { ..., "quotas": [ ... ] } }
-    """
     if not isinstance(payload, dict): return []
-    # prefer payload["data"]["quotas"] kalau ada
     q = _get(payload, "data", "quotas")
     if q is None:
         q = payload.get("quotas") or payload.get("quota") or []
@@ -135,48 +128,65 @@ def render_quota_summary(payload: dict) -> str:
         return "_Tidak ada data_"
 
     if "error" in payload:
-        return f"❌ *Error*: `{payload.get('error')}`"
+        error_msg = payload.get("error", "Terjadi kesalahan")
+        return f"❌ *Error*\n```\n{error_msg}\n```"
 
     quotas = extract_quotas(payload)
     if quotas:
-        out = []
-        for pkg in quotas[:12]:
-            name = _first_existing(pkg, ["name", "package"], "Paket")
-            exp  = _first_existing(pkg, ["expiry_date", "expired_at", "expire"])
-            header = f"📦 *{name}*"
-            if exp: header += f"\n⏳ sampai: `{exp}`"
-            out.append(header)
-
+        out = ["━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+        for pkg_idx, pkg in enumerate(quotas[:12], 1):
+            name = _first_existing(pkg, ["name", "package"], "Paket Tanpa Nama")
+            exp  = _first_existing(pkg, ["expiry_date", "expired_at", "expire"], "—")
+            
+            out.append(f"\n🔹 *Paket {pkg_idx}: {name}*")
+            out.append(f"   ⏳ Berlaku sampai: `{exp}`")
+            
             details = pkg.get("details") or pkg.get("detail") or []
-            for d in _to_list(details):
-                typ = str(_first_existing(d, ["type"], "")).upper()
-                benefit = _first_existing(d, ["benefit","name"], typ or "Kuota")
-                total = _first_existing(d, ["total_quota","total","quota_total"])
-                remain = _first_existing(d, ["remaining_quota","remaining","quota_remaining"])
-                usedp = _first_existing(d, ["used_percentage","percent_used"])
-                remp  = _first_existing(d, ["remaining_percentage","percent_remaining"])
+            if details:
+                out.append(f"   \n   📊 Detail:")
+                for d in _to_list(details):
+                    typ = str(_first_existing(d, ["type"], "")).upper()
+                    benefit = _first_existing(d, ["benefit","name"], typ or "Kuota")
+                    total = _first_existing(d, ["total_quota","total","quota_total"])
+                    remain = _first_existing(d, ["remaining_quota","remaining","quota_remaining"])
+                    usedp = _first_existing(d, ["used_percentage","percent_used"])
+                    remp  = _first_existing(d, ["remaining_percentage","percent_remaining"])
 
-                bullet = f"• {benefit}"
-                if typ and typ not in ("DATA",""): bullet += f" ({typ})"
+                    emoji = "📱"
+                    if "data" in benefit.lower(): emoji = "📡"
+                    elif "sms" in benefit.lower(): emoji = "💬"
+                    elif "call" in benefit.lower() or "panggil" in benefit.lower(): emoji = "☎️"
+                    
+                    bullet = f"      {emoji} {benefit}"
+                    if typ and typ not in ("DATA",""): bullet += f" `[{typ}]`"
 
-                info = []
-                if remain: info.append(f"{remain} tersisa")
-                if total:  info.append(f"dari {total}")
-                if remp:   info.append(f"{remp} sisa")
-                elif usedp: info.append(f"{usedp} terpakai")
-                if info: bullet += " — " + ", ".join(info)
-                out.append(bullet)
-            out.append("")  # spacer
-        return "\n".join(out).strip()
+                    info = []
+                    if remain: info.append(f"*{remain}* sisa")
+                    if total:  info.append(f"dari *{total}*")
+                    if remp and "%" in str(remp): info.append(f"({remp})")
+                    elif usedp and "%" in str(usedp): info.append(f"({usedp} terpakai)")
+                    
+                    if info:
+                        bullet += "\n          " + " • ".join(info)
+                    out.append(bullet)
+            else:
+                out.append(f"      ℹ️ Tidak ada detail paket")
+        
+        out.append("\n━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        return "\n".join(out)
 
     # fallback kalau struktur beda
     meta = {k:v for k,v in payload.items() if k not in ("quotas","quota","data")}
     pretty = json.dumps(meta, ensure_ascii=False, indent=2)
-    if len(pretty) > 1200: pretty = pretty[:1200] + "…"
-    return "✅ *Cek berhasil*\n" + "```\n" + pretty + "\n```"
+    if len(pretty) > 1000: pretty = pretty[:1000] + "…"
+    return "✅ *Cek berhasil*\n```json\n" + pretty + "\n```"
 
 def fmt_result(msisdn: str, status: int, data):
-    head = f"📡 *Cek Kuota* `{msisdn}`\nStatus HTTP: `{status}`"
+    if status == 200:
+        head = f"✅ *HASIL CEK KUOTA*\n📱 Nomor: `{msisdn}`"
+    else:
+        head = f"⚠️ *CEK KUOTA GAGAL*\n📱 Nomor: `{msisdn}`\n❌ Status HTTP: `{status}`"
+    
     body = render_quota_summary(data if isinstance(data, dict) else {})
     return head + "\n" + body
 
@@ -185,7 +195,7 @@ def api_check(msisdn: str):
     headers = {
         "Content-Type": "application/json",
         "X-FDZ-Key": EDGE_HEADER_KEY,
-        "User-Agent": "cekkuota-bot/1.2"
+        "User-Agent": "cekkuota-bot/1.3"
     }
     payload = {"msisdn": msisdn}
     status, data = http_post_json(API_URL, payload, headers)
@@ -231,64 +241,89 @@ def is_allowed_chat(chat_id: int) -> bool:
 
 def handle_command(chat_id: int, text: str):
     text = (text or "").strip()
-    lower = text.lower().split("@")[0]  # handle /mbot@Namabot
+    lower = text.lower().split("@")[0]
 
-    if lower.startswith("/mbot") or lower.startswith("/menu"):
+    if lower in ("/start", "/mbot", "/menu"):
         menu = (
-            "📋 *Menu Bot*\n"
-            "/mbot – daftar perintah\n"
-            "/cek `<msisdn>` – cek satu nomor\n"
-            "/cek_all – cek semua nomor di konfigurasi\n"
-            "/jadwal – lihat jadwal cek (5×/hari)\n"
-            "/ping – respons cepat\n"
+            "╔════════════════════════════════╗\n"
+            "║     🤖 MENU BOT CEK KUOTA 📱    ║\n"
+            "╚════════════════════════════════╝\n\n"
+            "📋 *Daftar Perintah:*\n\n"
+            "🔹 `/start` – tampilkan menu\n"
+            "🔹 `/mbot` – menu bantuan\n"
+            "🔹 `/cek <nomor>` – cek kuota satu nomor\n"
+            "     Contoh: `/cek 08812345678`\n\n"
+            "🔹 `/cek_all` – cek semua nomor terdaftar\n"
+            "🔹 `/jadwal` – lihat jadwal cek otomatis\n"
+            "🔹 `/ping` – tes koneksi bot\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "_Bot siap membantu! 😊_"
         )
         tg_send_text(str(chat_id), menu, "Markdown"); return
 
     if lower.startswith("/ping"):
-        tg_send_text(str(chat_id), "pong ✅"); return
+        tg_send_text(str(chat_id), "🟢 *Bot aktif dan siap digunakan!* ✅\n_Respons time: OK_"); return
 
     if lower.startswith("/jadwal"):
-        sch = "\n".join([f"`{s}`" for s in SCHEDULES])
+        sch_text = "\n".join([f"   ⏱️  `{s}`" for s in SCHEDULES])
         body = (
-            f"🕒 *Jadwal Cek (5×/hari)*\n"
-            f"TZ: `{TZ}`\n{sch}\n\n"
-            f"MSISDN:\n" + "\n".join([f"• `{x}`" for x in MSISDNS])
+            "🕒 *JADWAL CEK KUOTA OTOMATIS*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🌍 *Zona Waktu:* `{TZ}`\n\n"
+            "*Jadwal (5x per hari):*\n" + sch_text + "\n\n"
+            "📱 *Nomor Terdaftar:*\n" + 
+            "\n".join([f"   • `{x}`" for x in MSISDNS]) +
+            "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
         tg_send_text(str(chat_id), body, "Markdown"); return
 
     if lower.startswith("/cek_all"):
-        tg_send_text(str(chat_id), "Oke, cek semua nomor…")
+        tg_send_text(str(chat_id), "⏳ Tunggu sebentar… sedang cek semua nomor…")
         for msisdn in MSISDNS:
             if not valid_msisdn(msisdn):
-                tg_send_text(str(chat_id), f"⚠️ Nomor tidak valid: `{msisdn}`", "Markdown")
+                tg_send_text(str(chat_id), f"⚠️ *Nomor tidak valid:* `{msisdn}`", "Markdown")
                 continue
             status, data = api_check(msisdn)
             tg_send_text(str(chat_id), fmt_result(msisdn, status, data), "Markdown")
             time.sleep(0.2)
+        tg_send_text(str(chat_id), "✅ *Selesai!* Semua nomor sudah dicek.")
         return
 
     if lower.startswith("/cek"):
         parts = text.split()
         if len(parts) < 2:
-            tg_send_text(str(chat_id), "Format: `/cek 0877xxxxxxxx`", "Markdown"); return
+            tg_send_text(str(chat_id), "❌ *Format salah!*\n\nGunakan: `/cek 08812345678`", "Markdown"); return
         msisdn = parts[1].strip()
         if not valid_msisdn(msisdn):
-            tg_send_text(str(chat_id), "⚠️ Nomor tidak valid. Gunakan 08xxxxxxxxxx / 628xxxxxxxxxx / +628xxxxxxxxxx"); return
-        tg_send_text(str(chat_id), f"Cek kuota `{msisdn}`…", "Markdown")
+            tg_send_text(str(chat_id), 
+                "⚠️ *Nomor tidak valid!*\n\n"
+                "Format yang diterima:\n"
+                "   • `08xxxxxxxxxx` (awal 0)\n"
+                "   • `628xxxxxxxxxx` (awal 62)\n"
+                "   • `+628xxxxxxxxxx` (awal +62)", "Markdown"); return
+        tg_send_text(str(chat_id), f"⏳ *Sedang cek kuota* `{msisdn}`…", "Markdown")
         status, data = api_check(msisdn)
         tg_send_text(str(chat_id), fmt_result(msisdn, status, data), "Markdown"); return
 
-    tg_send_text(str(chat_id), "Perintah tidak dikenali. Ketik /mbot")
+    tg_send_text(str(chat_id), 
+        "❓ *Perintah tidak dikenali*\n\n"
+        "Ketik `/mbot` untuk melihat daftar perintah yang tersedia.", "Markdown")
 
 def send_startup_notification():
     if not CHAT_IDS: return
-    info = "✅ *Bot aktif*\n" f"TZ: `{TZ}`\nKetik */mbot* untuk daftar perintah."
+    info = (
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🟢 *BOT AKTIF DAN SIAP BEROPERASI*\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🌍 Zona Waktu: `{TZ}`\n"
+        f"📱 Nomor Pantau: {len(MSISDNS)} nomor\n"
+        f"⏱️  Jadwal: 5x per hari\n\n"
+        "💬 Ketik */mbot* untuk melihat bantuan."
+    )
     for cid in CHAT_IDS: tg_send_text(cid, info, "Markdown")
 
 def bootstrap_updates_offset():
-    # Pastikan webhook off biar getUpdates nggak 409
     tg_api("deleteWebhook", {})
-    # Sync offset ke update terakhir (hindari backlog)
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?timeout=0&limit=1"
     status, data = http_get_json(url)
     if status == 200 and isinstance(data, dict):
@@ -301,10 +336,13 @@ def bootstrap_updates_offset():
 
 def daemon_run():
     if not BOT_TOKEN:
-        print("BOT_TOKEN kosong"); return
+        print("❌ BOT_TOKEN kosong"); return
+    
+    print("✅ Bot daemon dimulai…")
     send_startup_notification()
     offset = bootstrap_updates_offset()
     base = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+    
     while True:
         try:
             params = {"timeout": 50, "offset": offset + 1}
@@ -327,15 +365,17 @@ def daemon_run():
             save_offset(offset)
         except KeyboardInterrupt:
             break
-        except Exception:
+        except Exception as e:
+            print(f"Error: {e}")
             time.sleep(1.0)
 
 # ============= main =============
 def main():
     if "--cron" in sys.argv:
+        print("🕐 Menjalankan mode CRON…")
         cron_run()
     else:
-        print("Starting daemon (long polling Telegram)…")
+        print("🚀 Menjalankan mode DAEMON…")
         daemon_run()
 
 if __name__ == "__main__":
