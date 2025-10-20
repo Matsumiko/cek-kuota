@@ -21,7 +21,7 @@
 import os, sys, json, time
 from urllib import request, parse, error
 
-# KONSTAN API
+# KONSTAN API (public)
 API_URL = "https://cekkuota-pubs.fadzdigital.store/cekkuota"
 EDGE_HEADER_KEY = "019a00a6-f36c-743f-cff4-fcd7abba5a07"
 
@@ -237,9 +237,25 @@ def handle_command(chat_id: int, text: str):
 
     tg_send_text(str(chat_id), "Perintah tidak dikenali. Ketik /menu")
 
+def send_startup_notification():
+    # Dipanggil ketika daemon start
+    if not CHAT_IDS:
+        return
+    try:
+        info = (
+            "✅ *Bot aktif*\n"
+            f"TZ: `{TZ}`\n"
+            "Ketik */menu* untuk daftar perintah."
+        )
+        for cid in CHAT_IDS:
+            tg_send_text(cid, info, "Markdown")
+    except Exception:
+        pass
+
 def daemon_run():
     if not BOT_TOKEN:
         print("BOT_TOKEN kosong"); return
+    send_startup_notification()
     offset = load_offset()
     base = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
     while True:
@@ -259,7 +275,7 @@ def daemon_run():
                 chat_id = chat.get("id")
                 text = msg.get("text", "")
                 if chat_id is None: continue
-                if not is_allowed_chat(chat_id):
+                if not is_allowed_chat(chat_id):  # diamkan chat tak diizinkan
                     continue
                 handle_command(chat_id, text)
             save_offset(offset)
