@@ -102,7 +102,7 @@ def http_get_json(url: str):
 def tg_send_text(chat_id: str, text: str, parse_mode="Markdown"):
     """Kirim pesan ke Telegram dengan error handling"""
     if not BOT_TOKEN:
-        print("[WARNING] BOT_TOKEN kosong")
+        print("[ERROR] BOT_TOKEN kosong - tidak bisa kirim pesan")
         return False
     
     if not text or len(str(text)) == 0:
@@ -117,19 +117,31 @@ def tg_send_text(chat_id: str, text: str, parse_mode="Markdown"):
         api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {
             "chat_id": str(chat_id), 
-            "text": text,
-            "parse_mode": parse_mode
+            "text": text
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        
         data = parse.urlencode(payload).encode("utf-8")
         req = request.Request(api, data=data, method="POST")
         req.add_header("Content-Type", "application/x-www-form-urlencoded")
         
         with request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-            resp.read()
+            result = resp.read()
+            status = resp.getcode()
+            print(f"[SEND_OK] chat_id={chat_id}, status={status}")
             return True
             
+    except error.HTTPError as e:
+        print(f"[SEND_ERROR] HTTP {e.code} - chat_id={chat_id}: {e.reason}")
+        try:
+            err_data = e.read().decode("utf-8")
+            print(f"[RESPONSE] {err_data}")
+        except:
+            pass
+        return False
     except Exception as e:
-        print(f"[SEND_MESSAGE_ERROR] chat_id={chat_id}: {e}")
+        print(f"[SEND_ERROR] chat_id={chat_id}: {type(e).__name__}: {e}")
         return False
 
 def tg_api(method: str, params: dict = None):
@@ -365,9 +377,12 @@ def handle_command(chat_id: int, text: str):
         if not text:
             return
         
+        print(f"[COMMAND] chat_id={chat_id}, text={text[:50]}")
+        
         lower = text.lower().split("@")[0]
 
         if lower in ("/start", "/mbot", "/menu"):
+            print(f"[ACTION] Menu command dari {chat_id}")
             menu = (
                 "*🤖 BOT CEK KUOTA*\n\n"
                 "*Perintah:*\n\n"
@@ -379,14 +394,18 @@ def handle_command(chat_id: int, text: str):
                 "🕒 /jadwal – jadwal cek otomatis\n"
                 "✅ /ping – status bot"
             )
-            tg_send_text(str(chat_id), menu, "Markdown")
+            result = tg_send_text(str(chat_id), menu, "Markdown")
+            print(f"[RESULT] Menu send: {result}")
             return
 
         if lower.startswith("/ping"):
-            tg_send_text(str(chat_id), "✅ *Bot Online*\nKoneksi baik, siap melayani 👍", "Markdown")
+            print(f"[ACTION] Ping command dari {chat_id}")
+            result = tg_send_text(str(chat_id), "✅ *Bot Online*\nKoneksi baik, siap melayani 👍", "Markdown")
+            print(f"[RESULT] Ping send: {result}")
             return
 
         if lower.startswith("/jadwal"):
+            print(f"[ACTION] Jadwal command dari {chat_id}")
             sch_text = "\n".join([f"  ⏱️  {s}" for s in SCHEDULES]) if SCHEDULES else "  Tidak ada jadwal"
             body = (
                 "*📅 JADWAL CEK OTOMATIS*\n\n"
@@ -396,10 +415,12 @@ def handle_command(chat_id: int, text: str):
                 f"*Nomor Pantau ({len(MSISDNS)}):*\n" + 
                 ("\n".join([f"  • {x}" for x in MSISDNS]) if MSISDNS else "  Tidak ada nomor")
             )
-            tg_send_text(str(chat_id), body, "Markdown")
+            result = tg_send_text(str(chat_id), body, "Markdown")
+            print(f"[RESULT] Jadwal send: {result}")
             return
 
         if lower.startswith("/cek_all"):
+            print(f"[ACTION] Cek_all command dari {chat_id}")
             if not MSISDNS:
                 tg_send_text(str(chat_id), "⚠️ Tidak ada nomor terdaftar", "Markdown")
                 return
@@ -413,9 +434,11 @@ def handle_command(chat_id: int, text: str):
                 tg_send_text(str(chat_id), fmt_result(msisdn, status, data), "Markdown")
                 time.sleep(0.2)
             tg_send_text(str(chat_id), "✅ *Selesai!*\nSemua nomor sudah dicek", "Markdown")
+            print(f"[RESULT] Cek_all done")
             return
 
         if lower.startswith("/cek"):
+            print(f"[ACTION] Cek command dari {chat_id}")
             parts = text.split()
             if len(parts) < 2:
                 tg_send_text(str(chat_id), "❌ *Format salah!*\n\nGunakan: `/cek 08812345678`", "Markdown")
@@ -434,8 +457,10 @@ def handle_command(chat_id: int, text: str):
             tg_send_text(str(chat_id), f"⏳ *Cek kuota*\n`{msisdn}`", "Markdown")
             status, data = api_check(msisdn)
             tg_send_text(str(chat_id), fmt_result(msisdn, status, data), "Markdown")
+            print(f"[RESULT] Cek done for {msisdn}")
             return
 
+        print(f"[WARNING] Command tidak dikenali: {lower}")
         tg_send_text(str(chat_id), 
             "❓ *Perintah tidak dikenali*\n\n"
             "Ketik `/mbot` untuk melihat bantuan", "Markdown")
@@ -534,10 +559,13 @@ def daemon_run():
                     if chat_id is None or not text:
                         continue
                     
+                    print(f"[UPDATE] chat_id={chat_id}, text={text[:50]}")
+                    
                     if not is_allowed_chat(chat_id):
-                        print(f"[WARNING] Unauthorized chat: {chat_id}")
+                        print(f"[BLOCKED] Unauthorized chat: {chat_id}")
                         continue
                     
+                    print(f"[PROCESSING] Command from {chat_id}")
                     handle_command(chat_id, text)
                     
                 except Exception as e:
