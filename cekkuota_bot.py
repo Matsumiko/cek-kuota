@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 # cekkuota_bot.py — Bot Telegram + cron-friendly (stdlib only)
-# - Perintah: /menu, /cek <msisdn>, /cek_all, /jadwal, /ping
-# - Startup: kirim notifikasi "Bot aktif"
+# Perintah: /mbot (menu), /cek <msisdn>, /cek_all, /jadwal, /ping
+# Output cek kuota: ringkasan rapi (bukan JSON)
+# Startup: kirim notifikasi "Bot aktif", deleteWebhook, sync offset
 
 import os, sys, json, time
 from urllib import request, parse, error
 
-# KONSTAN API
+# ================== KONSTAN API (public) ==================
 API_URL = "https://cekkuota-pubs.fadzdigital.store/cekkuota"
 EDGE_HEADER_KEY = "019a00a6-f36c-743f-cff4-fcd7abba5a07"
+# ==========================================================
 
 BOT_TOKEN  = os.getenv("BOT_TOKEN", "").strip()
 CHAT_IDS   = [x.strip() for x in os.getenv("CHAT_ID", "").split(",") if x.strip()]
@@ -26,7 +28,7 @@ if not os.path.isdir(STATE_DIR):
     try: os.makedirs(STATE_DIR, exist_ok=True)
     except Exception: pass
 
-# Util dasar
+# ============= Util dasar =============
 def valid_msisdn(s: str) -> bool:
     import re
     return bool(re.match(r"^(08[1-9][0-9]{7,11}|628[1-9][0-9]{7,11}|\+628[1-9][0-9]{7,11})$", s or ""))
@@ -94,32 +96,65 @@ def tg_api(method: str, params: dict = None):
     except Exception:
         return 0, None
 
-# Format hasil kuota
-def render_quota_summary(data: dict) -> str:
-    if not isinstance(data, dict): return "_Tidak ada data_"
-    if "error" in data: return f"❌ *Error*: `{data.get('error')}`"
+# ============= Format hasil kuota (rapi) =============
+def _to_list(x):
+    if x is None: return []
+    if isinstance(x, list): return x
+    return [x]
 
-    quotas = data.get("quotas") or data.get("quota") or []
-    if isinstance(quotas, dict): quotas = [quotas]
+def _get(obj, *keys):
+    cur = obj
+    for k in keys:
+        if isinstance(cur, dict) and k in cur:
+            cur = cur[k]
+        else:
+            return None
+    return cur
 
-    lines = []
-    if isinstance(quotas, list) and quotas:
-        for q in quotas[:10]:
-            name = q.get("name") or q.get("package") or "Paket"
-            exp  = q.get("expiry_date") or q.get("expired_at") or q.get("expire")
+def _first_existing(obj, names, default=None):
+    for n in names:
+        v = obj.get(n) if isinstance(obj, dict) else None
+        if v not in (None, ""): return v
+    return default
+
+def extract_quotas(payload: dict):
+    """
+    dukung kedua bentuk:
+    1) { ..., "quotas": [ ... ] }
+    2) { ..., "data": { ..., "quotas": [ ... ] } }
+    """
+    if not isinstance(payload, dict): return []
+    # prefer payload["data"]["quotas"] kalau ada
+    q = _get(payload, "data", "quotas")
+    if q is None:
+        q = payload.get("quotas") or payload.get("quota") or []
+    return _to_list(q)
+
+def render_quota_summary(payload: dict) -> str:
+    if not isinstance(payload, dict):
+        return "_Tidak ada data_"
+
+    if "error" in payload:
+        return f"❌ *Error*: `{payload.get('error')}`"
+
+    quotas = extract_quotas(payload)
+    if quotas:
+        out = []
+        for pkg in quotas[:12]:
+            name = _first_existing(pkg, ["name", "package"], "Paket")
+            exp  = _first_existing(pkg, ["expiry_date", "expired_at", "expire"])
             header = f"📦 *{name}*"
             if exp: header += f"\n⏳ sampai: `{exp}`"
-            lines.append(header)
+            out.append(header)
 
-            det = q.get("details") or q.get("detail") or []
-            if isinstance(det, dict): det = [det]
-            for d in det:
-                typ = (d.get("type") or "").upper()
-                benefit = d.get("benefit") or d.get("name") or typ or "Kuota"
-                total = d.get("total_quota") or d.get("total") or d.get("quota_total")
-                remain = d.get("remaining_quota") or d.get("remaining") or d.get("quota_remaining")
-                usedp = d.get("used_percentage") or d.get("percent_used")
-                remp  = d.get("remaining_percentage") or d.get("percent_remaining")
+            details = pkg.get("details") or pkg.get("detail") or []
+            for d in _to_list(details):
+                typ = str(_first_existing(d, ["type"], "")).upper()
+                benefit = _first_existing(d, ["benefit","name"], typ or "Kuota")
+                total = _first_existing(d, ["total_quota","total","quota_total"])
+                remain = _first_existing(d, ["remaining_quota","remaining","quota_remaining"])
+                usedp = _first_existing(d, ["used_percentage","percent_used"])
+                remp  = _first_existing(d, ["remaining_percentage","percent_remaining"])
 
                 bullet = f"• {benefit}"
                 if typ and typ not in ("DATA",""): bullet += f" ({typ})"
@@ -130,12 +165,12 @@ def render_quota_summary(data: dict) -> str:
                 if remp:   info.append(f"{remp} sisa")
                 elif usedp: info.append(f"{usedp} terpakai")
                 if info: bullet += " — " + ", ".join(info)
-                lines.append(bullet)
-            lines.append("")  # pemisah paket
-        return "\n".join(lines).strip()
+                out.append(bullet)
+            out.append("")  # spacer
+        return "\n".join(out).strip()
 
-    # fallback (kalau struktur beda)
-    meta = {k:v for k,v in data.items() if k != "quotas"}
+    # fallback kalau struktur beda
+    meta = {k:v for k,v in payload.items() if k not in ("quotas","quota","data")}
     pretty = json.dumps(meta, ensure_ascii=False, indent=2)
     if len(pretty) > 1200: pretty = pretty[:1200] + "…"
     return "✅ *Cek berhasil*\n" + "```\n" + pretty + "\n```"
@@ -145,12 +180,12 @@ def fmt_result(msisdn: str, status: int, data):
     body = render_quota_summary(data if isinstance(data, dict) else {})
     return head + "\n" + body
 
-# Panggil API cek kuota
+# ============= Panggil API cek kuota =============
 def api_check(msisdn: str):
     headers = {
         "Content-Type": "application/json",
         "X-FDZ-Key": EDGE_HEADER_KEY,
-        "User-Agent": "cekkuota-bot/1.1"
+        "User-Agent": "cekkuota-bot/1.2"
     }
     payload = {"msisdn": msisdn}
     status, data = http_post_json(API_URL, payload, headers)
@@ -159,7 +194,7 @@ def api_check(msisdn: str):
         status, data = http_post_json(API_URL, payload, headers)
     return status, data
 
-# Mode CRON
+# ============= Mode CRON =============
 def cron_run():
     missing = []
     if not BOT_TOKEN:  missing.append("BOT_TOKEN")
@@ -167,6 +202,7 @@ def cron_run():
     if not MSISDNS:    missing.append("MSISDN_LIST")
     if missing:
         print("ENV kurang:", ", ".join(missing)); return
+
     for msisdn in MSISDNS:
         if not valid_msisdn(msisdn):
             for cid in CHAT_IDS: tg_send_text(cid, f"⚠️ Nomor tidak valid: `{msisdn}`", "Markdown")
@@ -176,7 +212,7 @@ def cron_run():
         for cid in CHAT_IDS: tg_send_text(cid, msg, "Markdown")
         time.sleep(0.2)
 
-# Telegram daemon (long polling)
+# ============= Telegram daemon (long polling) =============
 OFFSET_FILE = os.path.join(STATE_DIR, "updates_offset.txt")
 
 def load_offset():
@@ -195,16 +231,18 @@ def is_allowed_chat(chat_id: int) -> bool:
 
 def handle_command(chat_id: int, text: str):
     text = (text or "").strip()
-    lower = text.lower().split("@")[0]  # handle /menu@namabot
-    if lower.startswith("/menu"):
+    lower = text.lower().split("@")[0]  # handle /mbot@Namabot
+
+    if lower.startswith("/mbot") or lower.startswith("/menu"):
         menu = (
-            "📋 *Menu*\n"
-            "/menu – daftar perintah\n"
+            "📋 *Menu Bot*\n"
+            "/mbot – daftar perintah\n"
             "/cek `<msisdn>` – cek satu nomor\n"
             "/cek_all – cek semua nomor di konfigurasi\n"
             "/jadwal – lihat jadwal cek (5×/hari)\n"
             "/ping – respons cepat\n"
-        ); tg_send_text(str(chat_id), menu, "Markdown"); return
+        )
+        tg_send_text(str(chat_id), menu, "Markdown"); return
 
     if lower.startswith("/ping"):
         tg_send_text(str(chat_id), "pong ✅"); return
@@ -215,16 +253,19 @@ def handle_command(chat_id: int, text: str):
             f"🕒 *Jadwal Cek (5×/hari)*\n"
             f"TZ: `{TZ}`\n{sch}\n\n"
             f"MSISDN:\n" + "\n".join([f"• `{x}`" for x in MSISDNS])
-        ); tg_send_text(str(chat_id), body, "Markdown"); return
+        )
+        tg_send_text(str(chat_id), body, "Markdown"); return
 
     if lower.startswith("/cek_all"):
         tg_send_text(str(chat_id), "Oke, cek semua nomor…")
         for msisdn in MSISDNS:
             if not valid_msisdn(msisdn):
-                tg_send_text(str(chat_id), f"⚠️ Nomor tidak valid: `{msisdn}`", "Markdown"); continue
+                tg_send_text(str(chat_id), f"⚠️ Nomor tidak valid: `{msisdn}`", "Markdown")
+                continue
             status, data = api_check(msisdn)
             tg_send_text(str(chat_id), fmt_result(msisdn, status, data), "Markdown")
-            time.sleep(0.2); return
+            time.sleep(0.2)
+        return
 
     if lower.startswith("/cek"):
         parts = text.split()
@@ -237,17 +278,17 @@ def handle_command(chat_id: int, text: str):
         status, data = api_check(msisdn)
         tg_send_text(str(chat_id), fmt_result(msisdn, status, data), "Markdown"); return
 
-    tg_send_text(str(chat_id), "Perintah tidak dikenali. Ketik /menu")
+    tg_send_text(str(chat_id), "Perintah tidak dikenali. Ketik /mbot")
 
 def send_startup_notification():
     if not CHAT_IDS: return
-    info = "✅ *Bot aktif*\n" f"TZ: `{TZ}`\nKetik */menu* untuk daftar perintah."
+    info = "✅ *Bot aktif*\n" f"TZ: `{TZ}`\nKetik */mbot* untuk daftar perintah."
     for cid in CHAT_IDS: tg_send_text(cid, info, "Markdown")
 
 def bootstrap_updates_offset():
-    # Pastikan webhook MATI (kalau pernah pakai webhook, getUpdates bakal 409)
+    # Pastikan webhook off biar getUpdates nggak 409
     tg_api("deleteWebhook", {})
-    # Ambil update terakhir (tanpa proses backlog)
+    # Sync offset ke update terakhir (hindari backlog)
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?timeout=0&limit=1"
     status, data = http_get_json(url)
     if status == 200 and isinstance(data, dict):
@@ -256,7 +297,6 @@ def bootstrap_updates_offset():
             last = int(res[-1].get("update_id", 0))
             save_offset(last)
             return last
-    # kalau kosong, pakai offset file
     return load_offset()
 
 def daemon_run():
@@ -290,7 +330,7 @@ def daemon_run():
         except Exception:
             time.sleep(1.0)
 
-# main
+# ============= main =============
 def main():
     if "--cron" in sys.argv:
         cron_run()
