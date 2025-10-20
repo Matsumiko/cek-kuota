@@ -2,9 +2,9 @@
 # install.sh — installer 1-klik untuk bot cek kuota (OpenWrt/STB friendly)
 # - Pasang python3 (jika belum)
 # - Download cekkuota_bot.py
-# - Buat /root/cekkuota.env (hanya BOT_TOKEN, CHAT_ID, MSISDN_LIST)
+# - Buat /root/cekkuota.env (BOT_TOKEN, CHAT_ID, MSISDN_LIST)
 # - Set cron 5x/hari
-# - Jalankan daemon & autostart rc.local
+# - Jalankan daemon & autostart rc.local (hanya menambah baris spesifik)
 
 set -e
 
@@ -14,6 +14,10 @@ INSTALL_DIR="/root/cek-kuota"
 ENV_FILE="/root/cekkuota.env"
 PY_FILE="cekkuota_bot.py"
 RAW_BASE="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main"
+
+RC_LOCAL="/etc/rc.local"
+RC_LINE1=". ${ENV_FILE}"
+RC_LINE2="nohup python3 ${INSTALL_DIR}/${PY_FILE} >/tmp/cekkuota_daemon.log 2>&1 &"
 
 echo "[*] Menyiapkan direktori: ${INSTALL_DIR}"
 mkdir -p "$INSTALL_DIR"
@@ -71,10 +75,9 @@ CRON_BAK="/root/crontab.backup.$(date +%s)"
 crontab -l > "${CRON_BAK}" 2>/dev/null || true
 
 TMP_CRON="/tmp/cron.$$"
-grep -v "cekkuota_bot.py" "${CRON_BAK}" > "${TMP_CRON}" || true
-cat >> "${TMP_CRON}" <<'CRON_EOF'
-# === cek-kuota auto-cek 5x/hari ===
-CRON_EOF
+# buang entri lama bot ini saja
+grep -v " ${INSTALL_DIR}/${PY_FILE} --cron" "${CRON_BAK}" > "${TMP_CRON}" || true
+echo "# === cek-kuota auto-cek 5x/hari ===" >> "${TMP_CRON}"
 
 IFS=',' read -r S1 S2 S3 S4 S5 <<< "${SCHEDULES_VAL}"
 echo "${S1} . ${ENV_FILE}; python3 ${INSTALL_DIR}/${PY_FILE} --cron >/tmp/cekkuota_00.log 2>&1" >> "${TMP_CRON}"
@@ -91,17 +94,16 @@ echo "[*] Menjalankan daemon bot (long polling)…"
 pkill -f "python3 ${INSTALL_DIR}/${PY_FILE}" >/dev/null 2>&1 || true
 nohup sh -c ". ${ENV_FILE}; exec python3 ${INSTALL_DIR}/${PY_FILE}" >/tmp/cekkuota_daemon.log 2>&1 &
 
-echo "[*] Pasang auto-start di boot (/etc/rc.local)…"
-if [ -f /etc/rc.local ]; then
-  if ! grep -q "${PY_FILE}" /etc/rc.local; then
-    sed -i.bak '/exit 0/d' /etc/rc.local
-    {
-      echo ". ${ENV_FILE}"
-      echo "nohup python3 ${INSTALL_DIR}/${PY_FILE} >/tmp/cekkuota_daemon.log 2>&1 &"
-      echo "exit 0"
-    } >> /etc/rc.local
-    chmod +x /etc/rc.local
+echo "[*] Pasang auto-start di boot (${RC_LOCAL})…"
+if [ -f "${RC_LOCAL}" ]; then
+  # tambahkan baris spesifik jika belum ada; tidak menghapus baris lain
+  grep -Fqx "${RC_LINE1}" "${RC_LOCAL}" || echo "${RC_LINE1}" >> "${RC_LOCAL}"
+  grep -Fqx "${RC_LINE2}" "${RC_LOCAL}" || echo "${RC_LINE2}" >> "${RC_LOCAL}"
+  # pastikan ada exit 0 di akhir
+  if ! tail -n1 "${RC_LOCAL}" | grep -q "^exit 0$"; then
+    echo "exit 0" >> "${RC_LOCAL}"
   fi
+  chmod +x "${RC_LOCAL}"
 fi
 
 echo
