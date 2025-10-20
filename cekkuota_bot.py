@@ -11,9 +11,9 @@ API_URL = "https://cekkuota-pubs.fadzdigital.store/cekkuota"
 EDGE_HEADER_KEY = "019a00a6-f36c-743f-cff4-fcd7abba5a07"
 # ==========================================================
 
-BOT_TOKEN  = os.getenv("BOT_TOKEN", "").strip()
-CHAT_IDS   = [x.strip() for x in os.getenv("CHAT_ID", "").split(",") if x.strip()]
-MSISDNS    = [x.strip() for x in os.getenv("MSISDN_LIST", "").split(",") if x.strip()]
+BOT_TOKEN   = os.getenv("BOT_TOKEN", "").strip()
+CHAT_IDS    = [x.strip() for x in os.getenv("CHAT_ID", "").split(",") if x.strip()]
+MSISDNS     = [x.strip() for x in os.getenv("MSISDN_LIST", "").split(",") if x.strip()]
 
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT", "12") or "12")
 RETRIES = int(os.getenv("RETRIES", "1") or "1")
@@ -24,9 +24,9 @@ ALLOW_ANY_CHAT = os.getenv("ALLOW_ANY_CHAT", "0") == "1"
 STATE_DIR = os.getenv("STATE_DIR", "/root/cek-kuota").rstrip("/")
 
 if not os.path.isdir(STATE_DIR):
-    try: 
+    try:
         os.makedirs(STATE_DIR, exist_ok=True)
-    except Exception as e: 
+    except Exception as e:
         print(f"[WARNING] Tidak bisa membuat STATE_DIR: {e}")
 
 # ============= Util dasar =============
@@ -43,7 +43,7 @@ def http_post_json(url: str, data: dict, headers: dict):
     try:
         body = json.dumps(data).encode("utf-8")
         req = request.Request(url, data=body, method="POST")
-        for k, v in headers.items(): 
+        for k, v in headers.items():
             req.add_header(k, v)
         
         with request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
@@ -51,16 +51,16 @@ def http_post_json(url: str, data: dict, headers: dict):
             ctype = resp.headers.get("Content-Type", "")
             raw = resp.read()
             if "application/json" in (ctype or "").lower():
-                try: 
+                try:
                     return status, json.loads(raw.decode("utf-8", "ignore"))
                 except json.JSONDecodeError:
                     return status, None
             return status, None
             
     except error.HTTPError as e:
-        try: 
+        try:
             raw = e.read()
-            try: 
+            try:
                 data = json.loads(raw.decode("utf-8", "ignore"))
             except json.JSONDecodeError:
                 data = None
@@ -82,14 +82,14 @@ def http_get_json(url: str):
             ctype = resp.headers.get("Content-Type", "")
             raw = resp.read()
             if "application/json" in (ctype or "").lower():
-                try: 
+                try:
                     return status, json.loads(raw.decode("utf-8", "ignore"))
                 except json.JSONDecodeError:
                     return status, None
             return status, None
             
     except error.HTTPError as e:
-        try: 
+        try:
             data = json.loads(e.read().decode("utf-8", "ignore"))
         except Exception:
             data = None
@@ -116,7 +116,7 @@ def tg_send_text(chat_id: str, text: str, parse_mode="Markdown"):
     try:
         api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         payload = {
-            "chat_id": str(chat_id), 
+            "chat_id": str(chat_id),
             "text": text
         }
         if parse_mode:
@@ -146,7 +146,7 @@ def tg_send_text(chat_id: str, text: str, parse_mode="Markdown"):
 
 def tg_api(method: str, params: dict = None):
     """Panggil Telegram API"""
-    if params is None: 
+    if params is None:
         params = {}
     
     try:
@@ -164,9 +164,9 @@ def tg_api(method: str, params: dict = None):
 # ============= Format hasil kuota =============
 def _to_list(x):
     """Convert ke list"""
-    if x is None: 
+    if x is None:
         return []
-    if isinstance(x, list): 
+    if isinstance(x, list):
         return x
     return [x]
 
@@ -193,7 +193,7 @@ def _first_existing(obj, names, default=None):
 
 def extract_quotas(payload: dict):
     """Extract quota array dari berbagai format response"""
-    if not isinstance(payload, dict): 
+    if not isinstance(payload, dict):
         return []
     
     # Try: data.quotas
@@ -246,8 +246,8 @@ def render_quota_details(payload: dict) -> tuple:
                     remp  = _first_existing(d, ["remaining_percentage", "percent_remaining"], "-")
 
                     detail_lines.append(f"  • {benefit}")
-                    detail_lines.append(f"    Sisa       : {remain}")
-                    detail_lines.append(f"    Total      : {total}")
+                    detail_lines.append(f"    Sisa      : {remain}")
+                    detail_lines.append(f"    Total     : {total}")
                     
                     if remp and "%" in str(remp):
                         detail_lines.append(f"    Persentase : {remp}")
@@ -312,11 +312,11 @@ def api_check(msisdn: str):
 def cron_run():
     """Jalankan cek kuota untuk semua nomor (gunakan dengan cron)"""
     missing = []
-    if not BOT_TOKEN:  
+    if not BOT_TOKEN:
         missing.append("BOT_TOKEN")
-    if not CHAT_IDS:   
+    if not CHAT_IDS:
         missing.append("CHAT_ID")
-    if not MSISDNS:    
+    if not MSISDNS:
         missing.append("MSISDN_LIST")
     
     if missing:
@@ -327,14 +327,14 @@ def cron_run():
     
     for msisdn in MSISDNS:
         if not valid_msisdn(msisdn):
-            for cid in CHAT_IDS: 
+            for cid in CHAT_IDS:
                 tg_send_text(cid, f"⚠️ Nomor tidak valid: `{msisdn}`", "Markdown")
             continue
         
         status, data = api_check(msisdn)
         msg = fmt_result(msisdn, status, data)
         
-        for cid in CHAT_IDS: 
+        for cid in CHAT_IDS:
             tg_send_text(cid, msg, "Markdown")
         
         time.sleep(0.2)
@@ -347,7 +347,7 @@ OFFSET_FILE = os.path.join(STATE_DIR, "updates_offset.txt")
 def load_offset():
     """Load offset dari file"""
     try:
-        with open(OFFSET_FILE, "r") as f: 
+        with open(OFFSET_FILE, "r") as f:
             val = f.read().strip()
             return int(val) if val else 0
     except FileNotFoundError:
@@ -359,14 +359,14 @@ def load_offset():
 def save_offset(n):
     """Save offset ke file"""
     try:
-        with open(OFFSET_FILE, "w") as f: 
+        with open(OFFSET_FILE, "w") as f:
             f.write(str(int(n)))
     except Exception as e:
         print(f"[SAVE_OFFSET_ERROR] {e}")
 
 def is_allowed_chat(chat_id: int) -> bool:
     """Check apakah chat_id diizinkan"""
-    if ALLOW_ANY_CHAT: 
+    if ALLOW_ANY_CHAT:
         return True
     return str(chat_id) in CHAT_IDS
 
@@ -383,49 +383,57 @@ def handle_command(chat_id: int, text: str):
 
         if lower in ("/start", "/mbot", "/menu"):
             print(f"[ACTION] Menu command dari {chat_id}")
-            menu = (
-                "*🤖 BOT CEK KUOTA*\n\n"
-                "*Perintah:*\n\n"
-                "💬 /start – menu utama\n"
-                "📋 /mbot – bantuan perintah\n"
-                "🔍 /cek <nomor> – cek satu nomor\n"
-                "    _Contoh: /cek 08812345678_\n\n"
-                "📊 /cek_all – cek semua nomor\n"
-                "🕒 /jadwal – jadwal cek otomatis\n"
-                "✅ /ping – status bot"
-            )
+            
+            if lower == "/start":
+                menu = (
+                    "👋 *Selamat Datang!*\n\n"
+                    "Bot ini siap membantumu mengecek sisa kuota.\n\n"
+                    "Ketik /mbot untuk melihat semua perintah yang tersedia."
+                )
+            else:
+                menu = (
+                    "🤖 *BANTUAN BOT CEK KUOTA*\n\n"
+                    "*Perintah:*\n\n"
+                    "🏠 /start – Pesan selamat datang\n"
+                    "📋 /mbot – Menu bantuan ini\n"
+                    "🔍 /cek <nomor> – Cek satu nomor\n"
+                    "   _Contoh: /cek 08812345678_\n\n"
+                    "📊 /cek_all – Cek semua nomor terdaftar\n"
+                    "🕒 /jadwal – Lihat jadwal cek otomatis\n"
+                    "🏓 /ping – Cek status bot"
+                )
             result = tg_send_text(str(chat_id), menu, "Markdown")
             print(f"[RESULT] Menu send: {result}")
             return
 
-        if lower.startswith("/ping"):
+        if lower == "/ping":
             print(f"[ACTION] Ping command dari {chat_id}")
-            result = tg_send_text(str(chat_id), "✅ *Bot Online*\nKoneksi baik, siap melayani 👍", "Markdown")
+            result = tg_send_text(str(chat_id), "🏓 *Pong! Bot Online*\nKoneksi baik, siap melayani 👍", "Markdown")
             print(f"[RESULT] Ping send: {result}")
             return
 
-        if lower.startswith("/jadwal"):
+        if lower == "/jadwal":
             print(f"[ACTION] Jadwal command dari {chat_id}")
             sch_text = "\n".join([f"  ⏱️  {s}" for s in SCHEDULES]) if SCHEDULES else "  Tidak ada jadwal"
             body = (
-                "*📅 JADWAL CEK OTOMATIS*\n\n"
+                "📅 *JADWAL CEK OTOMATIS*\n\n"
                 f"🌍 Zona: *{TZ}*\n"
-                f"Frekuensi: *5x per hari*\n\n"
-                f"*Jam Cek:*\n{sch_text}\n\n"
-                f"*Nomor Pantau ({len(MSISDNS)}):*\n" + 
+                f"Frekuensi: *{len(SCHEDULES)}x per hari*\n\n"
+                f"*Jam Cek (format cron):*\n{sch_text}\n\n"
+                f"*Nomor Pantau ({len(MSISDNS)}):*\n" +
                 ("\n".join([f"  • {x}" for x in MSISDNS]) if MSISDNS else "  Tidak ada nomor")
             )
             result = tg_send_text(str(chat_id), body, "Markdown")
             print(f"[RESULT] Jadwal send: {result}")
             return
 
-        if lower.startswith("/cek_all"):
+        if lower == "/cek_all":
             print(f"[ACTION] Cek_all command dari {chat_id}")
             if not MSISDNS:
                 tg_send_text(str(chat_id), "⚠️ Tidak ada nomor terdaftar", "Markdown")
                 return
             
-            tg_send_text(str(chat_id), "⏳ *Sedang cek semua nomor...*", "Markdown")
+            tg_send_text(str(chat_id), f"⏳ *Sedang cek {len(MSISDNS)} nomor...*", "Markdown")
             for msisdn in MSISDNS:
                 if not valid_msisdn(msisdn):
                     tg_send_text(str(chat_id), f"⚠️ Nomor tidak valid: `{msisdn}`", "Markdown")
@@ -446,7 +454,7 @@ def handle_command(chat_id: int, text: str):
             
             msisdn = parts[1].strip()
             if not valid_msisdn(msisdn):
-                tg_send_text(str(chat_id), 
+                tg_send_text(str(chat_id),
                     "⚠️ *Nomor tidak valid!*\n\n"
                     "Format yang benar:\n"
                     "  • `08xxxxxxxxxx`\n"
@@ -461,7 +469,7 @@ def handle_command(chat_id: int, text: str):
             return
 
         print(f"[WARNING] Command tidak dikenali: {lower}")
-        tg_send_text(str(chat_id), 
+        tg_send_text(str(chat_id),
             "❓ *Perintah tidak dikenali*\n\n"
             "Ketik `/mbot` untuk melihat bantuan", "Markdown")
             
@@ -479,30 +487,33 @@ def send_startup_notification():
         "✅ *BOT AKTIF*\n\n"
         f"🌍 Zona: `{TZ}`\n"
         f"📱 Nomor: {len(MSISDNS)} terdaftar\n"
-        f"⏱️  Jadwal: 5x per hari\n\n"
+        f"⏱️  Jadwal: {len(SCHEDULES)}x per hari\n\n"
         "Ketik /mbot untuk bantuan"
     )
     for cid in CHAT_IDS:
         tg_send_text(cid, info, "Markdown")
 
 def bootstrap_updates_offset():
-    """Inisialisasi offset untuk polling"""
+    """Inisialisasi offset untuk polling, sinkronkan ke update_id TERAKHIR"""
     try:
         tg_api("deleteWebhook", {})
         
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?timeout=0&limit=1"
+        # Ambil 1 update TERAKHIR (offset=-1) untuk sinkronisasi
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?timeout=0&limit=1&offset=-1"
         status, data = http_get_json(url)
         
         if status == 200 and isinstance(data, dict):
             res = data.get("result", [])
             if res and len(res) > 0:
-                last = int(res[-1].get("update_id", 0))
+                # Ambil update_id dari satu-satunya hasil
+                last = int(res[0].get("update_id", 0))
                 save_offset(last)
-                print(f"[BOOTSTRAP] Offset initialized: {last}")
+                print(f"[BOOTSTRAP] Offset disinkronkan ke ID terakhir: {last}")
                 return last
         
+        # Fallback jika gagal (misal bot baru, 0 updates)
         offset = load_offset()
-        print(f"[BOOTSTRAP] Offset loaded: {offset}")
+        print(f"[BOOTSTRAP] Offset lama dimuat: {offset}")
         return offset
         
     except Exception as e:
@@ -549,7 +560,7 @@ def daemon_run():
                     offset = max(offset, update_id)
                     
                     msg = upd.get("message") or upd.get("edited_message")
-                    if not msg: 
+                    if not msg:
                         continue
                     
                     chat = msg.get("chat", {})
