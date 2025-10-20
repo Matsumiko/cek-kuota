@@ -1,3 +1,39 @@
+#!/usr/bin/env bash
+
+# Installer ini akan membuat file .py dan data.json secara lokal.
+# Tidak perlu mengunduh dari GitHub.
+
+set -e
+
+INSTALL_DIR="/root/cek-kuota"
+JSON_FILE="${INSTALL_DIR}/data.json"
+PY_FILE="bot_kuota.py" # Nama file bot python yang akan dibuat
+PY_PATH="${INSTALL_DIR}/${PY_FILE}"
+
+RC_LOCAL="/etc/rc.local"
+# Baris baru untuk rc.local (tanpa .env)
+RC_LINE_DAEMON="nohup python3 ${PY_PATH} >/tmp/cekkuota_daemon.log 2>&1 &"
+# Baris lama yang mungkin ada dan perlu dihapus
+RC_LINE_OLD_ENV=". /root/cekkuota.env"
+
+echo "[*] Menyiapkan direktori: ${INSTALL_DIR}"
+mkdir -p "$INSTALL_DIR"
+
+echo "[*] Cek & install python3 bila perlu…"
+if ! command -v python3 >/dev/null 2>&1; then
+  if command -v opkg >/dev/null 2>&1; then
+    opkg update || true
+    opkg install python3 ca-bundle || {
+      echo "Gagal memasang python3 via opkg. Pasang manual lalu ulangi."; exit 1;
+    }
+  else
+    echo "Tidak menemukan opkg. Pastikan python3 sudah terpasang."; exit 1
+  fi
+fi
+
+echo "[*] Membuat file bot Python di ${PY_PATH}..."
+# Menggunakan "EOF" dengan tanda kutip untuk mencegah ekspansi variabel di dalam blok
+cat > "${PY_PATH}" << "EOF"
 #!/usr/bin/env python3
 # Nama File: bot_kuota_final.py
 # Deskripsi: Versi rombakan (data.json) DENGAN format output (UX) asli yang bagus.
@@ -468,7 +504,7 @@ def fmt_result(msisdn: str, status: int, data):
             result = f"*❌ Gagal Cek Kuota*\nStatus: `{status}`\n📱 Nomor: `{msisdn}`"
         
         if detail:
-            result += f"\n\n```\n{detail}\n```"
+            result += f"\n\n\`\`\`\n{detail}\n\`\`\`" # <-- Format \`\`\` Anda
         
         return result
         
@@ -515,3 +551,93 @@ if __name__ == "__main__":
     else:
         bot = TelegramBot(token=BOT_TOKEN, allowed_chats=CHAT_IDS)
         bot.run()
+EOF
+
+# Pastikan file python bisa dieksekusi
+chmod +x "${PY_PATH}"
+
+echo
+echo "=== Konfigurasi Bot (akan disimpan di data.json) ==="
+read -rp "BOT_TOKEN (token bot Telegram): " BOT_TOKEN
+read -rp "CHAT_ID (boleh banyak, pisahkan dengan koma): " CHAT_ID
+read -rp "MSISDN_LIST (pisahkan koma, contoh: 0877xxxx,62812xxxx): " MSISDN_LIST
+
+# Opsional
+read -rp "TZ (default Asia/Jakarta): " TZ_IN
+TZ_VAL="${TZ_IN:-Asia/Jakarta}"
+
+# Perbaikan: Menghapus } yang salah ketik di jadwal default
+read -rp "Jadwal cron 5x/hari (ENTER untuk default): " SCHEDULES_IN
+SCHEDULES_VAL="${SCHEDULES_IN:-10 0 * * *,30 5 * * *,30 11 * * *,30 17 * * *,30 22 * * *}"
+
+echo "[*] Menulis ${JSON_FILE}"
+# Membuat file data.json
+cat > "${JSON_FILE}" <<EOF
+{
+  "BOT_TOKEN": "${BOT_TOKEN}",
+  "CHAT_ID": "${CHAT_ID}",
+  "MSISDN_LIST": "${MSISDN_LIST}",
+  "ALLOW_ANY_CHAT": "0",
+  "TZ": "${TZ_VAL}",
+  "STATE_DIR": "${INSTALL_DIR}",
+  "SCHEDULES": "${SCHEDULES_VAL}"
+}
+EOF
+
+# Set izin file config
+chmod 600 "${JSON_FILE}"
+
+echo "[*] Uji jalan sekali (mode cron)…"
+# Uji coba tidak perlu .env lagi
+python3 "${PY_PATH}" --cron || true
+
+echo "[*] Menambahkan cron 5x/hari…"
+CRON_BAK="/root/crontab.backup.$(date +%s)"
+crontab -l > "${CRON_BAK}" 2>/dev/null || true
+
+TMP_CRON="/tmp/cron.$$"
+# Buang entri lama bot ini saja (termasuk yang pakai .env)
+grep -v "${PY_FILE} --cron" "${CRON_BAK}" > "${TMP_CRON}" || true
+echo "# === cek-kuota auto-cek 5x/hari ===" >> "${TMP_CRON}"
+
+IFS=',' read -r S1 S2 S3 S4 S5 <<< "${SCHEDULES_VAL}"
+# Perintah cron baru, tidak pakai ". ${ENV_FILE};"
+echo "${S1} python3 ${PY_PATH} --cron >/tmp/cekkuota_00.log 2>&1" >> "${TMP_CRON}"
+echo "${S2} python3 ${PY_PATH} --cron >/tmp/cekkuota_05.log 2>&1" >> "${TMP_CRON}"
+echo "${S3} python3 ${PY_PATH} --cron >/tmp/cekkuota_11.log 2>&1" >> "${TMP_CRON}"
+echo "${S4} python3 ${PY_PATH} --cron >/tmp/cekkuota_17.log 2>&1" >> "${TMP_CRON}"
+echo "${S5} python3 ${PY_PATH} --cron >/tmp/cekkuota_22.log 2>&1" >> "${TMP_CRON}"
+
+crontab "${TMP_CRON}"
+rm -f "${TMP_CRON}"
+/etc/init.d/cron restart >/dev/null 2>&1 || true
+
+echo "[*] Menjalankan daemon bot (long polling)…"
+pkill -f "python3 ${PY_PATH}" >/dev/null 2>&1 || true
+# Perintah daemon baru, tidak pakai "sh -c '. ${ENV_FILE}; ...'"
+nohup python3 "${PY_PATH}" >/tmp/cekkuota_daemon.log 2>&1 &
+
+echo "[*] Pasang auto-start di boot (${RC_LOCAL})…"
+if [ -f "${RC_LOCAL}" ]; then
+  # Hapus baris .env lama jika ada
+  sed -i "\|${RC_LINE_OLD_ENV}|d" "${RC_LOCAL}"
+  
+  # Tambahkan baris daemon baru jika belum ada
+  grep -Fqx "${RC_LINE_DAEMON}" "${RC_LOCAL}" || echo "${RC_LINE_DAEMON}" >> "${RC_LOCAL}"
+  
+  # Pastikan "exit 0" ada di akhir file
+  if ! tail -n1 "${RC_LOCAL}" | grep -q "^exit 0$"; then
+    # Hapus "exit 0" lama jika ada di tengah file
+    sed -i "\|^exit 0$|d" "${RC_LOCAL}"
+    # Tambahkan "exit 0" di baris paling akhir
+    echo "exit 0" >> "${RC_LOCAL}"
+  fi
+  chmod +x "${RC_LOCAL}"
+fi
+
+echo
+echo "=== Selesai! ==="
+echo "- File Bot: ${PY_PATH}"
+echo "- File Config: ${JSON_FILE}"
+echo "- Cron & daemon autostart (saat reboot) telah aktif."
+echo "- Kirim '/menu' atau '/ping' ke bot Anda untuk tes."
